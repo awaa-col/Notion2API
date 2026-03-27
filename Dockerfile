@@ -9,6 +9,8 @@ RUN npm run build
 FROM golang:1.22-bookworm AS builder
 
 WORKDIR /src
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
@@ -21,7 +23,7 @@ COPY --from=frontend-builder /frontend/out /src/static/admin
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     test -f ./cmd/notion2api/main.go \
-    && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -v -trimpath -ldflags="-s -w" -o /out/notion2api ./cmd/notion2api
+    && CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -v -trimpath -ldflags="-s -w" -o /out/notion2api ./cmd/notion2api
 
 FROM debian:bookworm-slim
 
