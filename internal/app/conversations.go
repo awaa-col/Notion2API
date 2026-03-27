@@ -35,6 +35,9 @@ type ConversationEntry struct {
 	Title             string                   `json:"title"`
 	Origin            string                   `json:"origin,omitempty"`
 	RemoteOnly        bool                     `json:"remote_only,omitempty"`
+	Ephemeral         bool                     `json:"ephemeral,omitempty"`
+	EphemeralReason   string                   `json:"ephemeral_reason,omitempty"`
+	AutoDeleteAt      *time.Time               `json:"auto_delete_at,omitempty"`
 	Source            string                   `json:"source"`
 	Transport         string                   `json:"transport"`
 	Status            string                   `json:"status"`
@@ -58,29 +61,32 @@ type ConversationEntry struct {
 }
 
 type ConversationSummary struct {
-	ID                    string    `json:"id"`
-	Title                 string    `json:"title"`
-	Origin                string    `json:"origin,omitempty"`
-	RemoteOnly            bool      `json:"remote_only,omitempty"`
-	Source                string    `json:"source"`
-	Transport             string    `json:"transport"`
-	Status                string    `json:"status"`
-	Model                 string    `json:"model"`
-	UseWebSearch          bool      `json:"use_web_search"`
-	CreatedAt             time.Time `json:"created_at"`
-	UpdatedAt             time.Time `json:"updated_at"`
-	ThreadID              string    `json:"thread_id,omitempty"`
-	TraceID               string    `json:"trace_id,omitempty"`
-	MessageID             string    `json:"message_id,omitempty"`
-	ResponseID            string    `json:"response_id,omitempty"`
-	CompletionID          string    `json:"completion_id,omitempty"`
-	AccountEmail          string    `json:"account_email,omitempty"`
-	CreatedByDisplay      string    `json:"created_by_display_name,omitempty"`
-	Error                 string    `json:"error,omitempty"`
-	Preview               string    `json:"preview,omitempty"`
-	MessageCount          int       `json:"message_count"`
-	InputAttachmentCount  int       `json:"input_attachment_count"`
-	OutputAttachmentCount int       `json:"output_attachment_count"`
+	ID                    string     `json:"id"`
+	Title                 string     `json:"title"`
+	Origin                string     `json:"origin,omitempty"`
+	RemoteOnly            bool       `json:"remote_only,omitempty"`
+	Ephemeral             bool       `json:"ephemeral,omitempty"`
+	EphemeralReason       string     `json:"ephemeral_reason,omitempty"`
+	AutoDeleteAt          *time.Time `json:"auto_delete_at,omitempty"`
+	Source                string     `json:"source"`
+	Transport             string     `json:"transport"`
+	Status                string     `json:"status"`
+	Model                 string     `json:"model"`
+	UseWebSearch          bool       `json:"use_web_search"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	ThreadID              string     `json:"thread_id,omitempty"`
+	TraceID               string     `json:"trace_id,omitempty"`
+	MessageID             string     `json:"message_id,omitempty"`
+	ResponseID            string     `json:"response_id,omitempty"`
+	CompletionID          string     `json:"completion_id,omitempty"`
+	AccountEmail          string     `json:"account_email,omitempty"`
+	CreatedByDisplay      string     `json:"created_by_display_name,omitempty"`
+	Error                 string     `json:"error,omitempty"`
+	Preview               string     `json:"preview,omitempty"`
+	MessageCount          int        `json:"message_count"`
+	InputAttachmentCount  int        `json:"input_attachment_count"`
+	OutputAttachmentCount int        `json:"output_attachment_count"`
 }
 
 type ConversationEvent struct {
@@ -96,6 +102,9 @@ type ConversationEvent struct {
 
 type ConversationCreateRequest struct {
 	PreferredID      string
+	Ephemeral        bool
+	EphemeralReason  string
+	AutoDeleteAt     time.Time
 	Source           string
 	Transport        string
 	Model            string
@@ -197,6 +206,22 @@ func truncateRunes(text string, limit int) string {
 	return string(runes[:limit-1]) + "…"
 }
 
+func cloneTimePointer(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
+}
+
 func cloneConversationAttachments(items []ConversationAttachment) []ConversationAttachment {
 	if len(items) == 0 {
 		return nil
@@ -248,6 +273,7 @@ func cloneConversationEntry(entry *ConversationEntry) ConversationEntry {
 		return ConversationEntry{}
 	}
 	out := *entry
+	out.AutoDeleteAt = cloneTimePointer(entry.AutoDeleteAt)
 	out.InputAttachments = cloneConversationAttachments(entry.InputAttachments)
 	out.OutputAttachments = cloneUploadedAttachments(entry.OutputAttachments)
 	if len(entry.Messages) > 0 {
@@ -276,6 +302,9 @@ func buildConversationSummary(entry *ConversationEntry) ConversationSummary {
 		Title:                 entry.Title,
 		Origin:                firstNonEmpty(strings.TrimSpace(entry.Origin), "local"),
 		RemoteOnly:            entry.RemoteOnly,
+		Ephemeral:             entry.Ephemeral,
+		EphemeralReason:       entry.EphemeralReason,
+		AutoDeleteAt:          cloneTimePointer(entry.AutoDeleteAt),
 		Source:                entry.Source,
 		Transport:             entry.Transport,
 		Status:                entry.Status,
@@ -385,6 +414,9 @@ func (s *ConversationStore) Create(req ConversationCreateRequest) ConversationEn
 		ID:                id,
 		Title:             conversationTitle(req.Prompt, req.InputAttachments),
 		Origin:            "local",
+		Ephemeral:         req.Ephemeral,
+		EphemeralReason:   strings.TrimSpace(req.EphemeralReason),
+		AutoDeleteAt:      timePointer(req.AutoDeleteAt),
 		Source:            firstNonEmpty(req.Source, "api"),
 		Transport:         firstNonEmpty(req.Transport, "responses"),
 		Status:            "running",
@@ -443,6 +475,13 @@ func (s *ConversationStore) Continue(conversationID string, req ConversationCrea
 	if entry != nil {
 		entry.Source = firstNonEmpty(req.Source, entry.Source)
 		entry.Transport = firstNonEmpty(req.Transport, entry.Transport)
+		if req.Ephemeral {
+			entry.Ephemeral = true
+			entry.EphemeralReason = firstNonEmpty(strings.TrimSpace(req.EphemeralReason), entry.EphemeralReason)
+			if !req.AutoDeleteAt.IsZero() {
+				entry.AutoDeleteAt = timePointer(req.AutoDeleteAt)
+			}
+		}
 		if clean := strings.TrimSpace(req.Model); clean != "" {
 			entry.Model = clean
 		}
@@ -590,6 +629,9 @@ func (s *ConversationStore) Complete(conversationID string, result InferenceResu
 	if entry != nil {
 		entry.Status = "completed"
 		entry.UpdatedAt = now
+		if entry.Ephemeral {
+			entry.AutoDeleteAt = timePointer(now.Add(sillyTavernQuietConversationTTL))
+		}
 		entry.ThreadID = strings.TrimSpace(result.ThreadID)
 		entry.TraceID = strings.TrimSpace(result.TraceID)
 		entry.MessageID = strings.TrimSpace(result.MessageID)
@@ -638,6 +680,9 @@ func (s *ConversationStore) Fail(conversationID string, err error) {
 		entry.Status = "failed"
 		entry.Error = message
 		entry.UpdatedAt = now
+		if entry.Ephemeral {
+			entry.AutoDeleteAt = timePointer(now.Add(sillyTavernQuietConversationTTL))
+		}
 		if len(entry.Messages) > 0 {
 			last := &entry.Messages[len(entry.Messages)-1]
 			if last.Role == "assistant" && last.Status != "completed" {
@@ -694,6 +739,32 @@ func (s *ConversationStore) List() []ConversationSummary {
 			continue
 		}
 		items = append(items, buildConversationSummary(entry))
+	}
+	return items
+}
+
+func (s *ConversationStore) ListExpiredEphemeral(now time.Time, limit int) []ConversationEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if limit <= 0 {
+		limit = len(s.order)
+	}
+	items := make([]ConversationEntry, 0, minInt(limit, len(s.order)))
+	for _, id := range s.order {
+		entry := s.items[id]
+		if entry == nil || !entry.Ephemeral {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(entry.Status), "running") {
+			continue
+		}
+		if entry.AutoDeleteAt == nil || entry.AutoDeleteAt.After(now) {
+			continue
+		}
+		items = append(items, cloneConversationEntry(entry))
+		if len(items) >= limit {
+			break
+		}
 	}
 	return items
 }
@@ -827,6 +898,9 @@ func (s *ServerState) deleteResponsesByConversationOrThread(conversationID strin
 func (a *App) beginConversation(preferredConversationID string, source string, transport string, displayPrompt string, request PromptRunRequest) string {
 	entry := a.State.conversations().Create(ConversationCreateRequest{
 		PreferredID:      preferredConversationID,
+		Ephemeral:        request.EphemeralConversation,
+		EphemeralReason:  request.EphemeralReason,
+		AutoDeleteAt:     request.EphemeralDeleteAfter,
 		Source:           source,
 		Transport:        transport,
 		Model:            request.PublicModel,
@@ -841,6 +915,9 @@ func (a *App) beginConversation(preferredConversationID string, source string, t
 
 func (a *App) continueConversation(conversationID string, source string, transport string, displayPrompt string, request PromptRunRequest) (string, error) {
 	entry, err := a.State.conversations().Continue(conversationID, ConversationCreateRequest{
+		Ephemeral:        request.EphemeralConversation,
+		EphemeralReason:  request.EphemeralReason,
+		AutoDeleteAt:     request.EphemeralDeleteAfter,
 		Source:           source,
 		Transport:        transport,
 		Model:            request.PublicModel,

@@ -46,6 +46,12 @@ type App struct {
 	accountProtocolProbeOverride     func(context.Context, AppConfig, SessionInfo) error
 }
 
+const (
+	ephemeralConversationCleanupInterval  = time.Minute
+	ephemeralConversationCleanupBatchSize = 24
+	sillyTavernQuietConversationTTL       = 10 * time.Minute
+)
+
 type continuationTarget struct {
 	Conversation ConversationEntry
 	Session      *conversationContinuationState
@@ -815,6 +821,54 @@ func (a *App) startConversationTurn(existingConversationID string, preferredConv
 	return a.beginConversation(preferredConversationID, source, transport, displayPrompt, request)
 }
 
+func (a *App) markEphemeralConversationRequest(request *PromptRunRequest) {
+	if request == nil {
+		return
+	}
+	if request.ClientProfile != sillyTavernClientProfile || request.ClientMode != sillyTavernModeQuiet {
+		return
+	}
+	if request.EphemeralConversation {
+		return
+	}
+	request.EphemeralConversation = true
+	request.EphemeralReason = "sillytavern_quiet"
+}
+
+func (a *App) cleanupExpiredEphemeralConversations() {
+	if a == nil || a.State == nil {
+		return
+	}
+	expired := a.State.conversations().ListExpiredEphemeral(time.Now().UTC(), ephemeralConversationCleanupBatchSize)
+	for _, entry := range expired {
+		if err := a.deleteConversation(entry.ID); err != nil {
+			log.Printf("[cleanup] delete expired ephemeral conversation=%s thread=%s reason=%s failed: %v", entry.ID, entry.ThreadID, entry.EphemeralReason, err)
+			continue
+		}
+		log.Printf("[cleanup] deleted expired ephemeral conversation=%s thread=%s reason=%s", entry.ID, entry.ThreadID, entry.EphemeralReason)
+	}
+}
+
+func (a *App) StartEphemeralConversationCleanupLoop(parent context.Context) {
+	if a == nil || a.State == nil {
+		return
+	}
+	go func() {
+		a.cleanupExpiredEphemeralConversations()
+		timer := time.NewTimer(ephemeralConversationCleanupInterval)
+		defer timer.Stop()
+		for {
+			select {
+			case <-parent.Done():
+				return
+			case <-timer.C:
+				a.cleanupExpiredEphemeralConversations()
+				timer.Reset(ephemeralConversationCleanupInterval)
+			}
+		}
+	}()
+}
+
 func includeUsageInStream(payload map[string]any) bool {
 	options := mapValue(payload["stream_options"])
 	includeUsage, _ := options["include_usage"].(bool)
@@ -966,6 +1020,7 @@ func (a *App) handleSillyTavernChatCompletionsPayload(w http.ResponseWriter, r *
 		SessionFingerprint: originalFingerprint,
 		RawMessageCount:    originalRawMessageCount,
 	}
+	a.markEphemeralConversationRequest(&request)
 
 	preferredConversationID := requestedConversationID(r, payload)
 	conversation := ConversationEntry{}
@@ -1834,6 +1889,7 @@ func Main() {
 	}
 	app := &App{State: state}
 	state.StartSessionRefreshLoop(context.Background())
+	app.StartEphemeralConversationCleanupLoop(context.Background())
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
 	server := &http.Server{
 		Addr:              addr,

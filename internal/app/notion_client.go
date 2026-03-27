@@ -187,6 +187,9 @@ type PromptRunRequest struct {
 	SessionFingerprint                string
 	RawMessageCount                   int
 	ConversationID                    string
+	EphemeralConversation             bool
+	EphemeralReason                   string
+	EphemeralDeleteAfter              time.Time
 	SessionRepeatTurn                 bool
 	ForceSessionRepeatTurn            bool
 	attachmentThreadReady             bool
