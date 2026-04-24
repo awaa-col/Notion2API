@@ -30,12 +30,13 @@ import {
   StatusPill,
   formatMaybeDate,
 } from '@/components/admin/shared';
-import type { AccountItem, AccountsPayload, JsonResult, ModelItem } from '@/lib/services/admin/types';
+import type { AccountItem, AccountsPayload, JsonResult, ModelItem, WorkspaceItem } from '@/lib/services/admin/types';
 
 interface AccountEditState {
   priority: number;
   hourlyQuota: number;
   disabled: boolean;
+  activeWorkspaceId: string;
 }
 
 interface ManualImportState {
@@ -84,6 +85,7 @@ function buildAccountEditMap(items: AccountItem[]): Record<string, AccountEditSt
       priority: Number(item.priority ?? 0),
       hourlyQuota: Number(item.hourly_quota ?? 0),
       disabled: Boolean(item.disabled),
+      activeWorkspaceId: item.active_workspace_id || item.space_id || '',
     };
     return accumulator;
   }, {});
@@ -102,6 +104,24 @@ function safeParseProbeJSON(raw: string): ProbeDraft | null {
 function quotaText(item: AccountItem) {
   if (!item.quota_limited) return 'unlimited';
   return `${item.remaining_quota ?? 0}/${item.hourly_quota ?? 0}`;
+}
+
+function workspaceLabel(workspace: WorkspaceItem) {
+  return workspace.name || workspace.id;
+}
+
+function accountWorkspaces(item: AccountItem | null): WorkspaceItem[] {
+  if (!item) return [];
+  if (item.workspaces?.length) return item.workspaces;
+  if (!item.space_id) return [];
+  return [
+    {
+      id: item.space_id,
+      view_id: item.space_view_id,
+      name: item.space_name,
+      plan_type: item.plan_type,
+    },
+  ];
 }
 
 function FormBlock({
@@ -294,12 +314,13 @@ export function AccountsPanel({
     () => accountOptions.find((item) => item.email === selectedEmail) || null,
     [accountOptions, selectedEmail],
   );
+  const selectedWorkspaces = useMemo(() => accountWorkspaces(selectedAccount), [selectedAccount]);
 
   const modelOptions = useMemo(() => models.filter((item) => item.id), [models]);
 
   const selectedEdit = selectedAccount?.email
-    ? accountEdits[selectedAccount.email] || { priority: 0, hourlyQuota: 0, disabled: false }
-    : { priority: 0, hourlyQuota: 0, disabled: false };
+    ? accountEdits[selectedAccount.email] || { priority: 0, hourlyQuota: 0, disabled: false, activeWorkspaceId: selectedAccount.active_workspace_id || selectedAccount.space_id || '' }
+    : { priority: 0, hourlyQuota: 0, disabled: false, activeWorkspaceId: '' };
 
   const summaryCards = [
     {
@@ -348,6 +369,7 @@ export function AccountsPanel({
         priority: current[email]?.priority ?? 0,
         hourlyQuota: current[email]?.hourlyQuota ?? 0,
         disabled: current[email]?.disabled ?? false,
+        activeWorkspaceId: current[email]?.activeWorkspaceId ?? '',
         ...patch,
       },
     }));
@@ -384,6 +406,7 @@ export function AccountsPanel({
         priority: edit.priority,
         hourly_quota: edit.hourlyQuota,
         disabled: edit.disabled,
+        active_workspace_id: edit.activeWorkspaceId,
       });
       toast.success(`已保存 ${email}`);
     } catch (error) {
@@ -724,6 +747,24 @@ export function AccountsPanel({
                         <div className="text-sm font-semibold">调度与限额</div>
                         <p className="mt-1 text-sm leading-6 text-muted-foreground">保存后直接写回账号池。</p>
                       </div>
+                      <DetailField label="Workspace" hint={selectedWorkspaces.length > 1 ? `Detected ${selectedWorkspaces.length} workspaces for this account.` : 'Current workspace selection for this account.'}>
+                        <Select
+                          value={selectedEdit.activeWorkspaceId || selectedAccount.active_workspace_id || selectedAccount.space_id || ''}
+                          onValueChange={(value) => updateAccountEdit(selectedAccount.email, { activeWorkspaceId: value })}
+                          disabled={!selectedWorkspaces.length}
+                        >
+                          <SelectTrigger className={FIELD_CLASS}>
+                            <SelectValue placeholder="Select workspace" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {selectedWorkspaces.map((workspace) => (
+                              <SelectItem key={workspace.id} value={workspace.id}>
+                                {workspaceLabel(workspace)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </DetailField>
                       <div className="grid gap-4 md:grid-cols-2">
                         <DetailField label="Priority">
                           <Input

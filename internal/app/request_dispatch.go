@@ -153,11 +153,20 @@ func (a *App) loadPrimarySession(ctx context.Context, cfg AppConfig, snapshot Se
 			}
 		}
 	}
-	probePath, userName, spaceName, _ := cfg.ResolveSessionTarget()
+	probePath, userName, spaceName, activeEmail := cfg.ResolveSessionTarget()
 	if strings.TrimSpace(probePath) == "" {
 		return SessionInfo{}, fmt.Errorf("no active notion session configured; login or activate an account first")
 	}
-	return loadSessionInfo(probePath, userName, spaceName)
+	session, err := loadSessionInfo(probePath, userName, spaceName)
+	if err != nil {
+		return SessionInfo{}, err
+	}
+	if activeEmail != "" {
+		if account, _, ok := cfg.FindAccount(activeEmail); ok {
+			session = applyAccountWorkspaceToSession(account, session)
+		}
+	}
+	return session, nil
 }
 
 func (a *App) runPromptActiveFallback(r *http.Request, request PromptRunRequest, onDelta func(string) error) (InferenceResult, error) {

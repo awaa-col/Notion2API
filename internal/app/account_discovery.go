@@ -16,16 +16,9 @@ type discoveredAccountMetadata struct {
 	SpaceViewID   string
 	SpaceName     string
 	PlanType      string
+	Workspaces    []NotionWorkspace
 	ClientVersion string
 	Models        []ModelDefinition
-}
-
-type discoveredSpaceCandidate struct {
-	ID        string
-	ViewID    string
-	Name      string
-	PlanType  string
-	AIEnabled bool
 }
 
 func unwrapRecordValue(raw any) map[string]any {
@@ -55,22 +48,21 @@ func boolValue(v any) bool {
 	return false
 }
 
-func chooseBestSpace(recordMap map[string]any, userID string) discoveredSpaceCandidate {
+func collectRecordMapWorkspaces(recordMap map[string]any, userID string) []NotionWorkspace {
 	if recordMap == nil || strings.TrimSpace(userID) == "" {
-		return discoveredSpaceCandidate{}
+		return nil
 	}
 	userRoots := mapValue(recordMap["user_root"])
 	spaces := mapValue(recordMap["space"])
 	if userRoots == nil || spaces == nil {
-		return discoveredSpaceCandidate{}
+		return nil
 	}
 	root := unwrapRecordValue(userRoots[userID])
 	if root == nil {
-		return discoveredSpaceCandidate{}
+		return nil
 	}
 	pointers := sliceValue(root["space_view_pointers"])
-	best := discoveredSpaceCandidate{}
-	bestScore := -1
+	workspaces := make([]NotionWorkspace, 0, len(pointers))
 	for _, rawPointer := range pointers {
 		pointer := mapValue(rawPointer)
 		spaceID := strings.TrimSpace(stringValue(pointer["spaceId"]))
@@ -84,29 +76,15 @@ func chooseBestSpace(recordMap map[string]any, userID string) discoveredSpaceCan
 		settings := mapValue(value["settings"])
 		disabledAI := boolValue(settings["disable_ai_feature"])
 		enabledAI := boolValue(settings["enable_ai_feature"])
-		candidate := discoveredSpaceCandidate{
+		workspaces = append(workspaces, NotionWorkspace{
 			ID:        firstNonEmpty(strings.TrimSpace(stringValue(value["id"])), spaceID),
 			ViewID:    strings.TrimSpace(stringValue(pointer["id"])),
 			Name:      strings.TrimSpace(stringValue(value["name"])),
 			PlanType:  strings.TrimSpace(stringValue(value["plan_type"])),
 			AIEnabled: enabledAI || !disabledAI,
-		}
-		score := 0
-		if candidate.AIEnabled {
-			score += 2
-		}
-		if plan := strings.ToLower(candidate.PlanType); plan != "" && plan != "free" {
-			score++
-		}
-		if candidate.Name != "" {
-			score++
-		}
-		if score > bestScore {
-			best = candidate
-			bestScore = score
-		}
+		})
 	}
-	return best
+	return mergeWorkspaceLists(workspaces, nil)
 }
 
 func parseLoadUserContentMetadata(payload map[string]any) discoveredAccountMetadata {
@@ -126,11 +104,13 @@ func parseLoadUserContentMetadata(payload map[string]any) discoveredAccountMetad
 		meta.UserName = strings.TrimSpace(stringValue(value["name"]))
 		break
 	}
-	space := chooseBestSpace(recordMap, meta.UserID)
-	meta.SpaceID = space.ID
-	meta.SpaceViewID = space.ViewID
-	meta.SpaceName = space.Name
-	meta.PlanType = space.PlanType
+	meta.Workspaces = collectRecordMapWorkspaces(recordMap, meta.UserID)
+	if workspace, ok := bestWorkspace(meta.Workspaces); ok {
+		meta.SpaceID = workspace.ID
+		meta.SpaceViewID = workspace.ViewID
+		meta.SpaceName = workspace.Name
+		meta.PlanType = workspace.PlanType
+	}
 	return meta
 }
 
@@ -194,6 +174,7 @@ func discoverImportedAccountMetadata(ctx context.Context, cfg AppConfig, cookies
 			meta.Email = firstNonEmpty(meta.Email, discovered.Email)
 			meta.UserID = firstNonEmpty(meta.UserID, discovered.UserID)
 			meta.UserName = firstNonEmpty(meta.UserName, discovered.UserName)
+			meta.Workspaces = mergeWorkspaceLists(discovered.Workspaces, meta.Workspaces)
 			meta.SpaceID = firstNonEmpty(meta.SpaceID, discovered.SpaceID)
 			meta.SpaceViewID = firstNonEmpty(meta.SpaceViewID, discovered.SpaceViewID)
 			meta.SpaceName = firstNonEmpty(meta.SpaceName, discovered.SpaceName)
@@ -211,12 +192,21 @@ func discoverImportedAccountMetadata(ctx context.Context, cfg AppConfig, cookies
 				meta.UserID = firstNonEmpty(meta.UserID, lookupUserID)
 				meta.Email = firstNonEmpty(meta.Email, bootstrap.Email)
 				meta.UserName = firstNonEmpty(meta.UserName, bootstrap.UserName)
+				meta.Workspaces = mergeWorkspaceLists(bootstrap.Workspaces, meta.Workspaces)
 				meta.SpaceID = firstNonEmpty(meta.SpaceID, bootstrap.SpaceID)
 				meta.SpaceViewID = firstNonEmpty(meta.SpaceViewID, bootstrap.SpaceViewID)
+				meta.SpaceName = firstNonEmpty(meta.SpaceName, bootstrap.SpaceName)
 			} else if primaryErr == nil {
 				primaryErr = err
 			}
 		}
+	}
+
+	if workspace, ok := selectPreferredWorkspace(meta.Workspaces, meta.SpaceID); ok {
+		meta.SpaceID = workspace.ID
+		meta.SpaceViewID = firstNonEmpty(meta.SpaceViewID, workspace.ViewID)
+		meta.SpaceName = firstNonEmpty(meta.SpaceName, workspace.Name)
+		meta.PlanType = firstNonEmpty(meta.PlanType, workspace.PlanType)
 	}
 
 	if strings.TrimSpace(meta.ClientVersion) != "" {

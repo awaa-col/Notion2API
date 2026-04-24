@@ -64,6 +64,8 @@ type loginSpaceBootstrap struct {
 	UserName    string
 	SpaceID     string
 	SpaceViewID string
+	SpaceName   string
+	Workspaces  []NotionWorkspace
 }
 
 type notionLoginAPIError struct {
@@ -524,6 +526,62 @@ func firstSpacePointer(pointers []any) (string, string) {
 	return "", ""
 }
 
+func parseSpacesInitialSpaceMap(payload map[string]any, userID string) map[string]any {
+	if users := mapValue(payload["users"]); users != nil {
+		if userEntry := mapValue(users[userID]); userEntry != nil {
+			if spaces := mapValue(userEntry["space"]); spaces != nil {
+				return spaces
+			}
+		}
+	}
+	for _, key := range []string{"space", "spaces"} {
+		if spaces := mapValue(payload[key]); spaces != nil {
+			return spaces
+		}
+	}
+	return nil
+}
+
+func parseSpacesInitialWorkspaces(payload map[string]any, userID string) []NotionWorkspace {
+	users := mapValue(payload["users"])
+	userEntry := mapValue(users[userID])
+	userRootEntry := mapValue(mapValue(mapValue(userEntry["user_root"])[userID])["value"])
+	userRootValue := mapValue(userRootEntry["value"])
+	pointers := sliceValue(userRootValue["space_view_pointers"])
+	spaces := parseSpacesInitialSpaceMap(payload, userID)
+	workspaces := make([]NotionWorkspace, 0, len(pointers))
+	for _, rawPointer := range pointers {
+		pointer := mapValue(rawPointer)
+		spaceID := strings.TrimSpace(stringValue(pointer["spaceId"]))
+		if spaceID == "" {
+			continue
+		}
+		workspace := NotionWorkspace{
+			ID:     spaceID,
+			ViewID: strings.TrimSpace(stringValue(pointer["id"])),
+		}
+		if spaces != nil {
+			if value := unwrapRecordValue(spaces[spaceID]); value != nil {
+				settings := mapValue(value["settings"])
+				workspace = mergeWorkspaceItem(workspace, NotionWorkspace{
+					ID:        firstNonEmpty(strings.TrimSpace(stringValue(value["id"])), spaceID),
+					Name:      strings.TrimSpace(stringValue(value["name"])),
+					PlanType:  strings.TrimSpace(stringValue(value["plan_type"])),
+					AIEnabled: boolValue(settings["enable_ai_feature"]) || !boolValue(settings["disable_ai_feature"]),
+				})
+			}
+		}
+		workspaces = append(workspaces, workspace)
+	}
+	if len(workspaces) == 0 {
+		spaceID, spaceViewID := firstSpacePointer(pointers)
+		if spaceID != "" {
+			workspaces = append(workspaces, NotionWorkspace{ID: spaceID, ViewID: spaceViewID})
+		}
+	}
+	return mergeWorkspaceLists(workspaces, nil)
+}
+
 func parseSpacesInitial(payload map[string]any, userID string) loginSpaceBootstrap {
 	users := mapValue(payload["users"])
 	userEntry := mapValue(users[userID])
@@ -531,15 +589,16 @@ func parseSpacesInitial(payload map[string]any, userID string) loginSpaceBootstr
 	notionUserEntry := mapValue(mapValue(mapValue(userEntry["notion_user"])[userID])["value"])
 	notionUserValue := mapValue(notionUserEntry["value"])
 
-	userRootEntry := mapValue(mapValue(mapValue(userEntry["user_root"])[userID])["value"])
-	userRootValue := mapValue(userRootEntry["value"])
-	spaceID, spaceViewID := firstSpacePointer(sliceValue(userRootValue["space_view_pointers"]))
+	workspaces := parseSpacesInitialWorkspaces(payload, userID)
+	workspace, _ := bestWorkspace(workspaces)
 
 	return loginSpaceBootstrap{
 		Email:       strings.TrimSpace(stringValue(notionUserValue["email"])),
 		UserName:    strings.TrimSpace(stringValue(notionUserValue["name"])),
-		SpaceID:     spaceID,
-		SpaceViewID: spaceViewID,
+		SpaceID:     workspace.ID,
+		SpaceViewID: workspace.ViewID,
+		SpaceName:   workspace.Name,
+		Workspaces:  workspaces,
 	}
 }
 
@@ -749,7 +808,7 @@ func VerifyEmailLogin(ctx context.Context, cfg AppConfig, req LoginVerifyRequest
 		"user_name":      spaces.UserName,
 		"space_id":       spaces.SpaceID,
 		"space_view_id":  spaces.SpaceViewID,
-		"space_name":     firstNonEmpty(pending.SpaceName, spaces.UserName+"'s Space"),
+		"space_name":     firstNonEmpty(pending.SpaceName, spaces.SpaceName, spaces.UserName+"'s Space"),
 		"client_version": clientVersion,
 		"cookies":        cookies,
 	}
@@ -765,6 +824,8 @@ func VerifyEmailLogin(ctx context.Context, cfg AppConfig, req LoginVerifyRequest
 	pending.UserName = spaces.UserName
 	pending.SpaceID = spaces.SpaceID
 	pending.SpaceViewID = spaces.SpaceViewID
+	pending.SpaceName = firstNonEmpty(pending.SpaceName, spaces.SpaceName, spaces.UserName+"'s Space")
+	pending.Workspaces = spaces.Workspaces
 	pending.ClientVersion = clientVersion
 	pending.CurrentURL = upstream.HomeURL()
 	pending.FinalURL = upstream.HomeURL()

@@ -573,6 +573,11 @@ func (c *NotionAIClient) ensureSessionLiveMetadata(ctx context.Context) {
 		var payload map[string]any
 		if json.Unmarshal(body, &payload) == nil {
 			meta := parseLoadUserContentMetadata(payload)
+			if workspace, ok := selectPreferredWorkspace(meta.Workspaces, c.Session.SpaceID); ok {
+				meta.SpaceID = workspace.ID
+				meta.SpaceViewID = firstNonEmpty(meta.SpaceViewID, workspace.ViewID)
+				meta.SpaceName = firstNonEmpty(meta.SpaceName, workspace.Name)
+			}
 			c.Session.UserEmail = firstNonEmpty(strings.TrimSpace(c.Session.UserEmail), strings.TrimSpace(meta.Email))
 			c.Session.UserName = firstNonEmpty(strings.TrimSpace(meta.UserName), strings.TrimSpace(c.Session.UserName))
 			c.Session.SpaceID = firstNonEmpty(strings.TrimSpace(c.Session.SpaceID), strings.TrimSpace(meta.SpaceID))
@@ -602,6 +607,11 @@ func (c *NotionAIClient) ensureSessionLiveMetadata(ctx context.Context) {
 		return
 	}
 	bootstrap := parseSpacesInitial(payload, c.Session.UserID)
+	if workspace, ok := selectPreferredWorkspace(bootstrap.Workspaces, c.Session.SpaceID); ok {
+		bootstrap.SpaceID = workspace.ID
+		bootstrap.SpaceViewID = firstNonEmpty(bootstrap.SpaceViewID, workspace.ViewID)
+		bootstrap.SpaceName = firstNonEmpty(bootstrap.SpaceName, workspace.Name)
+	}
 	if strings.TrimSpace(bootstrap.SpaceViewID) == "" {
 		return
 	}

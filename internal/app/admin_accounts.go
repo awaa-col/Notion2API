@@ -45,7 +45,7 @@ func parseManualImportProbeJSON(raw string) (probePayload, error) {
 }
 
 func (a *App) accountRuntimeSummary(cfg AppConfig, account NotionAccount) map[string]any {
-	account = ensureAccountPaths(cfg, account)
+	account = normalizeAccountWorkspaceState(ensureAccountPaths(cfg, account))
 	now := time.Now()
 	remainingQuota, quotaLimited := accountRemainingQuota(account, now)
 	cooldownUntil := parseOptionalRFC3339(account.CooldownUntil)
@@ -65,6 +65,9 @@ func (a *App) accountRuntimeSummary(cfg AppConfig, account NotionAccount) map[st
 		"space_view_id":          account.SpaceViewID,
 		"space_name":             account.SpaceName,
 		"plan_type":              account.PlanType,
+		"active_workspace_id":    account.ActiveWorkspaceID,
+		"workspaces":             account.Workspaces,
+		"workspace_count":        len(account.Workspaces),
 		"client_version":         account.ClientVersion,
 		"status":                 account.Status,
 		"last_error":             account.LastError,
@@ -99,22 +102,27 @@ func (a *App) accountRuntimeSummary(cfg AppConfig, account NotionAccount) map[st
 		if text := firstNonEmpty(status.LastLoginAt, account.LastLoginAt); text != "" {
 			item["last_login_at"] = text
 		}
-		if text := firstNonEmpty(status.UserID, account.UserID); text != "" {
+		if text := firstNonEmpty(account.UserID, status.UserID); text != "" {
 			item["user_id"] = text
 		}
-		if text := firstNonEmpty(status.UserName, account.UserName); text != "" {
+		if text := firstNonEmpty(account.UserName, status.UserName); text != "" {
 			item["user_name"] = text
 		}
-		if text := firstNonEmpty(status.SpaceID, account.SpaceID); text != "" {
+		if text := firstNonEmpty(account.SpaceID, status.SpaceID); text != "" {
 			item["space_id"] = text
 		}
-		if text := firstNonEmpty(status.SpaceViewID, account.SpaceViewID); text != "" {
+		if text := firstNonEmpty(account.SpaceViewID, status.SpaceViewID); text != "" {
 			item["space_view_id"] = text
 		}
-		if text := firstNonEmpty(status.SpaceName, account.SpaceName); text != "" {
+		if text := firstNonEmpty(account.SpaceName, status.SpaceName); text != "" {
 			item["space_name"] = text
 		}
-		if text := firstNonEmpty(status.ClientVersion, account.ClientVersion); text != "" {
+		mergedWorkspaces := mergeWorkspaceLists(account.Workspaces, status.Workspaces)
+		if len(mergedWorkspaces) > 0 {
+			item["workspaces"] = mergedWorkspaces
+			item["workspace_count"] = len(mergedWorkspaces)
+		}
+		if text := firstNonEmpty(account.ClientVersion, status.ClientVersion); text != "" {
 			item["client_version"] = text
 		}
 	}
@@ -138,12 +146,13 @@ func (a *App) buildAccountsPayload() map[string]any {
 		"active_account": cfg.ActiveAccount,
 		"session_ready":  sessionReady,
 		"session": map[string]any{
-			"user_email":    session.UserEmail,
-			"user_id":       session.UserID,
-			"space_id":      session.SpaceID,
-			"space_view_id": session.SpaceViewID,
-			"space_name":    session.SpaceName,
-			"probe_path":    session.ProbePath,
+			"user_email":          session.UserEmail,
+			"user_id":             session.UserID,
+			"space_id":            session.SpaceID,
+			"space_view_id":       session.SpaceViewID,
+			"space_name":          session.SpaceName,
+			"active_workspace_id": session.SpaceID,
+			"probe_path":          session.ProbePath,
 		},
 		"login_helper":    cfg.ResolveLoginHelper(),
 		"session_refresh": cfg.ResolveSessionRefresh(),
@@ -213,7 +222,7 @@ func intFromPayloadValue(value any) (int, error) {
 }
 
 func mergeEditableAccountFields(existing NotionAccount, payload map[string]any) (NotionAccount, bool, error) {
-	next := existing
+	next := normalizeAccountWorkspaceState(existing)
 	accountPayload := accountPayloadMap(payload)
 	if raw, ok := accountPayload["disabled"]; ok {
 		disabled, ok := raw.(bool)
@@ -238,6 +247,17 @@ func mergeEditableAccountFields(existing NotionAccount, payload map[string]any) 
 			return NotionAccount{}, false, fmt.Errorf("hourly_quota must be >= 0")
 		}
 		next.HourlyQuota = quota
+	}
+	if raw, ok := accountPayload["active_workspace_id"]; ok {
+		workspaceID := strings.TrimSpace(stringValue(raw))
+		if workspaceID == "" {
+			return NotionAccount{}, false, fmt.Errorf("active_workspace_id must be non-empty")
+		}
+		updated, err := setAccountActiveWorkspace(next, workspaceID)
+		if err != nil {
+			return NotionAccount{}, false, err
+		}
+		next = updated
 	}
 	makeActive, _ := payload["active"].(bool)
 	return next, makeActive, nil
@@ -444,6 +464,15 @@ func (a *App) handleAdminAccountsTest(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"detail": err.Error()})
 		return
 	}
+	if email != "" {
+		if account, _, ok := cfg.FindAccount(email); ok {
+			session = applyAccountWorkspaceToSession(account, session)
+		}
+	} else if activeEmail != "" {
+		if account, _, ok := cfg.FindAccount(activeEmail); ok {
+			session = applyAccountWorkspaceToSession(account, session)
+		}
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), adminSyncRequestTimeout(cfg))
 	defer cancel()
 	request := PromptRunRequest{
@@ -474,7 +503,7 @@ func (a *App) handleAdminAccountsTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func mergeAccountWithStatus(cfg AppConfig, account NotionAccount, status LoginStatusFile) NotionAccount {
-	account = ensureAccountPaths(cfg, account)
+	account = normalizeAccountWorkspaceState(ensureAccountPaths(cfg, account))
 	account.Email = firstNonEmpty(status.Email, account.Email)
 	account.ProfileDir = firstNonEmpty(status.ProfileDir, account.ProfileDir)
 	account.PendingStatePath = firstNonEmpty(status.PendingStatePath, account.PendingStatePath)
@@ -489,7 +518,8 @@ func mergeAccountWithStatus(cfg AppConfig, account NotionAccount, status LoginSt
 	account.Status = firstNonEmpty(status.Status, account.Status)
 	account.LastError = firstNonEmpty(status.Error, status.Message, account.LastError)
 	account.LastLoginAt = firstNonEmpty(status.LastLoginAt, account.LastLoginAt)
-	return account
+	account = mergeAccountWorkspaces(account, status.Workspaces, status.SpaceID)
+	return normalizeAccountWorkspaceState(account)
 }
 
 func parseCookieHeader(header string) []ProbeCookie {
@@ -609,6 +639,7 @@ func buildImportedSession(ctx context.Context, cfg AppConfig, req manualAccountI
 			SpaceID:       probe.SpaceID,
 			SpaceViewID:   probe.SpaceViewID,
 			SpaceName:     spaceName,
+			Workspaces:    []NotionWorkspace{{ID: probe.SpaceID, ViewID: probe.SpaceViewID, Name: spaceName}},
 			ClientVersion: probe.ClientVersion,
 		})
 		probe.Email = firstNonEmpty(probe.Email, discovered.Email)
@@ -634,6 +665,12 @@ func buildImportedSession(ctx context.Context, cfg AppConfig, req manualAccountI
 		userName = accountPathSlug(probe.Email)
 	}
 	spaceName = firstNonEmpty(spaceName, userName+"'s Space")
+	discovered.Workspaces = mergeWorkspaceLists(discovered.Workspaces, []NotionWorkspace{{
+		ID:       probe.SpaceID,
+		ViewID:   probe.SpaceViewID,
+		Name:     spaceName,
+		PlanType: discovered.PlanType,
+	}})
 
 	storage := loginStorageState{
 		Email:         probe.Email,
@@ -649,6 +686,7 @@ func buildImportedSession(ctx context.Context, cfg AppConfig, req manualAccountI
 		SpaceID:       probe.SpaceID,
 		SpaceViewID:   probe.SpaceViewID,
 		SpaceName:     spaceName,
+		Workspaces:    discovered.Workspaces,
 		ClientVersion: probe.ClientVersion,
 		Title:         "Notion",
 		Message:       "manual session imported",
@@ -727,6 +765,7 @@ func (a *App) handleAdminAccountManualImport(w http.ResponseWriter, r *http.Requ
 	account.PlanType = firstNonEmpty(account.PlanType, discovered.PlanType)
 	account.UserName = firstNonEmpty(account.UserName, discovered.UserName)
 	account.SpaceName = firstNonEmpty(account.SpaceName, discovered.SpaceName)
+	account = mergeAccountWorkspaces(account, discovered.Workspaces, firstNonEmpty(probe.SpaceID, account.ActiveWorkspaceID))
 	if len(discovered.Models) > 0 {
 		cfg.Models = mergeModelDefinitions(discovered.Models, cfg.Models)
 	}

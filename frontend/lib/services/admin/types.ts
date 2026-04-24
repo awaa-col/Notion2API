@@ -15,6 +15,8 @@ export interface SessionSummary {
   user_name?: string;
   space_name?: string;
   space_id?: string;
+  space_view_id?: string;
+  active_workspace_id?: string;
   probe_path?: string;
   client_version?: string;
   user_id?: string;
@@ -144,6 +146,14 @@ export interface HealthPayload {
   space_id?: string;
 }
 
+export interface WorkspaceItem {
+  id: string;
+  view_id?: string;
+  name?: string;
+  plan_type?: string;
+  ai_enabled?: boolean;
+}
+
 export interface AccountItem {
   email?: string;
   active?: boolean;
@@ -168,8 +178,12 @@ export interface AccountItem {
   user_id?: string;
   user_name?: string;
   space_id?: string;
+  space_view_id?: string;
   space_name?: string;
   plan_type?: string;
+  active_workspace_id?: string;
+  workspaces?: WorkspaceItem[];
+  workspace_count?: number;
   client_version?: string;
   probe_json?: string;
   probe_exists?: boolean;

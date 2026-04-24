@@ -42,10 +42,10 @@ func isSessionRetryableError(err error) bool {
 }
 
 func loadSessionInfoForAccountRefresh(cfg AppConfig, account NotionAccount) (SessionInfo, error) {
-	account = ensureAccountPaths(cfg, account)
+	account = normalizeAccountWorkspaceState(ensureAccountPaths(cfg, account))
 	session, err := loadSessionInfo(account.ProbeJSON, firstNonEmpty(account.UserName, cfg.UserName), firstNonEmpty(account.SpaceName, cfg.SpaceName))
 	if err == nil {
-		return session, nil
+		return applyAccountWorkspaceToSession(account, session), nil
 	}
 	storage, storageErr := readLoginStorageState(account.StorageStatePath)
 	if storageErr != nil {
@@ -65,7 +65,7 @@ func loadSessionInfoForAccountRefresh(cfg AppConfig, account NotionAccount) (Ses
 	if strings.TrimSpace(account.UserID) == "" || strings.TrimSpace(account.SpaceID) == "" {
 		return SessionInfo{}, err
 	}
-	return SessionInfo{
+	session = SessionInfo{
 		ProbePath:     account.ProbeJSON,
 		ClientVersion: firstNonEmpty(storage.ClientVersion, account.ClientVersion),
 		UserID:        strings.TrimSpace(account.UserID),
@@ -75,21 +75,23 @@ func loadSessionInfoForAccountRefresh(cfg AppConfig, account NotionAccount) (Ses
 		SpaceViewID:   strings.TrimSpace(account.SpaceViewID),
 		SpaceName:     spaceName,
 		Cookies:       storage.Cookies,
-	}, nil
+	}
+	return applyAccountWorkspaceToSession(account, session), nil
 }
 
-func buildRefreshedSession(ctx context.Context, cfg AppConfig, account NotionAccount, prior SessionInfo) (SessionInfo, error) {
+func buildRefreshedSession(ctx context.Context, cfg AppConfig, account NotionAccount, prior SessionInfo) (SessionInfo, NotionAccount, error) {
+	account = normalizeAccountWorkspaceState(ensureAccountPaths(cfg, account))
 	upstream := cfg.NotionUpstream()
 	client, err := newNotionLoginHTTPClient(helperTimeout(cfg), upstream)
 	if err != nil {
-		return SessionInfo{}, err
+		return SessionInfo{}, account, err
 	}
 	restoreProbeCookies(client.Jar, upstream.HomeURL(), prior.Cookies)
 	restoreProbeCookies(client.Jar, upstream.LoginURL(), prior.Cookies)
 
 	bootstrap, err := fetchLoginBootstrap(ctx, client, upstream)
 	if err != nil {
-		return SessionInfo{}, err
+		return SessionInfo{}, account, err
 	}
 	clientVersion := firstNonEmpty(bootstrap.ClientVersion, prior.ClientVersion, account.ClientVersion)
 	userID := firstNonEmpty(
@@ -99,38 +101,57 @@ func buildRefreshedSession(ctx context.Context, cfg AppConfig, account NotionAcc
 		probeCookieValue(probeCookiesFromJar(client.Jar, upstream.LoginURL()), "notion_user_id"),
 	)
 	if userID == "" {
-		return SessionInfo{}, fmt.Errorf("notion_user_id missing during session refresh")
+		return SessionInfo{}, account, fmt.Errorf("notion_user_id missing during session refresh")
 	}
 	spaces, err := getSpacesInitial(ctx, client, upstream, clientVersion, userID)
 	if err != nil {
-		return SessionInfo{}, err
+		return SessionInfo{}, account, err
+	}
+	if discovered, discoverErr := fetchLoadUserContentMetadata(ctx, client, upstream, clientVersion, userID); discoverErr == nil {
+		spaces.Email = firstNonEmpty(spaces.Email, discovered.Email)
+		spaces.UserName = firstNonEmpty(spaces.UserName, discovered.UserName)
+		spaces.SpaceID = firstNonEmpty(discovered.SpaceID, spaces.SpaceID)
+		spaces.SpaceViewID = firstNonEmpty(discovered.SpaceViewID, spaces.SpaceViewID)
+		spaces.SpaceName = firstNonEmpty(discovered.SpaceName, spaces.SpaceName)
+		spaces.Workspaces = mergeWorkspaceLists(discovered.Workspaces, spaces.Workspaces)
 	}
 	cookies := probeCookiesFromJar(client.Jar, upstream.HomeURL())
 	if len(cookies) == 0 {
 		cookies = probeCookiesFromJar(client.Jar, upstream.LoginURL())
 	}
 	if len(cookies) == 0 {
-		return SessionInfo{}, fmt.Errorf("cookie jar empty after session refresh")
+		return SessionInfo{}, account, fmt.Errorf("cookie jar empty after session refresh")
 	}
 	userName := firstNonEmpty(spaces.UserName, prior.UserName, account.UserName)
 	if userName == "" {
 		userName = accountPathSlug(firstNonEmpty(spaces.Email, prior.UserEmail, account.Email))
 	}
-	spaceName := firstNonEmpty(prior.SpaceName, account.SpaceName)
+	selectedSpace, ok := selectPreferredWorkspace(spaces.Workspaces, firstNonEmpty(account.ActiveWorkspaceID, prior.SpaceID, account.SpaceID))
+	if !ok {
+		selectedSpace = NotionWorkspace{
+			ID:       firstNonEmpty(spaces.SpaceID, prior.SpaceID, account.SpaceID),
+			ViewID:   firstNonEmpty(spaces.SpaceViewID, prior.SpaceViewID, account.SpaceViewID),
+			Name:     firstNonEmpty(spaces.SpaceName, prior.SpaceName, account.SpaceName),
+			PlanType: account.PlanType,
+		}
+	}
+	spaceName := firstNonEmpty(selectedSpace.Name, prior.SpaceName, account.SpaceName)
 	if spaceName == "" {
 		spaceName = userName + "'s Space"
 	}
-	return SessionInfo{
+	account = mergeAccountWorkspaces(account, spaces.Workspaces, selectedSpace.ID)
+	session := SessionInfo{
 		ProbePath:     account.ProbeJSON,
 		ClientVersion: clientVersion,
 		UserID:        userID,
 		UserEmail:     firstNonEmpty(spaces.Email, prior.UserEmail, account.Email),
 		UserName:      userName,
-		SpaceID:       firstNonEmpty(spaces.SpaceID, prior.SpaceID, account.SpaceID),
-		SpaceViewID:   firstNonEmpty(spaces.SpaceViewID, prior.SpaceViewID, account.SpaceViewID),
+		SpaceID:       firstNonEmpty(selectedSpace.ID, prior.SpaceID, account.SpaceID),
+		SpaceViewID:   firstNonEmpty(selectedSpace.ViewID, prior.SpaceViewID, account.SpaceViewID),
 		SpaceName:     spaceName,
 		Cookies:       cookies,
-	}, nil
+	}
+	return applyAccountWorkspaceToSession(account, session), account, nil
 }
 
 func writeSessionArtifacts(account NotionAccount, session SessionInfo) error {
@@ -230,7 +251,7 @@ func (s *ServerState) tryRefreshAccount(ctx context.Context, cfg AppConfig, acco
 		writeSessionRefreshFailure(account, err)
 		return cfg, err
 	}
-	refreshedSession, err := buildRefreshedSession(ctx, cfg, account, prior)
+	refreshedSession, refreshedAccount, err := buildRefreshedSession(ctx, cfg, account, prior)
 	if err != nil {
 		account.Status = "expired"
 		account.LastError = err.Error()
@@ -245,6 +266,7 @@ func (s *ServerState) tryRefreshAccount(ctx context.Context, cfg AppConfig, acco
 		writeSessionRefreshFailure(account, err)
 		return cfg, err
 	}
+	account = refreshedAccount
 	account.UserID = refreshedSession.UserID
 	account.UserName = refreshedSession.UserName
 	account.SpaceID = refreshedSession.SpaceID

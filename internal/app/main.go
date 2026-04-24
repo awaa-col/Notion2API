@@ -203,10 +203,15 @@ func (s *ServerState) ApplyConfig(cfg AppConfig) error {
 		if err != nil {
 			log.Printf("[startup] session bootstrap skipped for probe=%s active=%s: %v", probePath, activeEmail, err)
 		} else {
-			session = loadedSession
-			client = newNotionAIClient(loadedSession, cfg)
 			if activeEmail != "" {
-				cfg.ProbeJSON = loadedSession.ProbePath
+				if account, _, ok := cfg.FindAccount(activeEmail); ok {
+					loadedSession = applyAccountWorkspaceToSession(account, loadedSession)
+				}
+			}
+			session = loadedSession
+			client = newNotionAIClient(session, cfg)
+			if activeEmail != "" {
+				cfg.ProbeJSON = session.ProbePath
 			}
 		}
 	}

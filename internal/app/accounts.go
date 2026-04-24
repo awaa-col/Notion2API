@@ -24,26 +24,27 @@ type ResolvedSessionRefresh struct {
 }
 
 type LoginStatusFile struct {
-	Success          bool   `json:"success"`
-	Status           string `json:"status,omitempty"`
-	Email            string `json:"email,omitempty"`
-	ProfileDir       string `json:"profile_dir,omitempty"`
-	PendingStatePath string `json:"pending_state_path,omitempty"`
-	StorageStatePath string `json:"storage_state_path,omitempty"`
-	ProbePath        string `json:"probe_path,omitempty"`
-	UserID           string `json:"user_id,omitempty"`
-	UserName         string `json:"user_name,omitempty"`
-	SpaceID          string `json:"space_id,omitempty"`
-	SpaceViewID      string `json:"space_view_id,omitempty"`
-	SpaceName        string `json:"space_name,omitempty"`
-	ClientVersion    string `json:"client_version,omitempty"`
-	CurrentURL       string `json:"current_url,omitempty"`
-	FinalURL         string `json:"final_url,omitempty"`
-	Title            string `json:"title,omitempty"`
-	Message          string `json:"message,omitempty"`
-	Error            string `json:"error,omitempty"`
-	UpdatedAt        string `json:"updated_at,omitempty"`
-	LastLoginAt      string `json:"last_login_at,omitempty"`
+	Success          bool              `json:"success"`
+	Status           string            `json:"status,omitempty"`
+	Email            string            `json:"email,omitempty"`
+	ProfileDir       string            `json:"profile_dir,omitempty"`
+	PendingStatePath string            `json:"pending_state_path,omitempty"`
+	StorageStatePath string            `json:"storage_state_path,omitempty"`
+	ProbePath        string            `json:"probe_path,omitempty"`
+	UserID           string            `json:"user_id,omitempty"`
+	UserName         string            `json:"user_name,omitempty"`
+	SpaceID          string            `json:"space_id,omitempty"`
+	SpaceViewID      string            `json:"space_view_id,omitempty"`
+	SpaceName        string            `json:"space_name,omitempty"`
+	Workspaces       []NotionWorkspace `json:"workspaces,omitempty"`
+	ClientVersion    string            `json:"client_version,omitempty"`
+	CurrentURL       string            `json:"current_url,omitempty"`
+	FinalURL         string            `json:"final_url,omitempty"`
+	Title            string            `json:"title,omitempty"`
+	Message          string            `json:"message,omitempty"`
+	Error            string            `json:"error,omitempty"`
+	UpdatedAt        string            `json:"updated_at,omitempty"`
+	LastLoginAt      string            `json:"last_login_at,omitempty"`
 }
 
 func canonicalEmailKey(email string) string {
@@ -166,7 +167,7 @@ func (cfg AppConfig) ResolveActiveAccount() (NotionAccount, int, bool) {
 
 func (cfg AppConfig) ResolveSessionTarget() (probePath string, userName string, spaceName string, activeEmail string) {
 	if account, _, ok := cfg.ResolveActiveAccount(); ok {
-		account = ensureAccountPaths(cfg, account)
+		account = normalizeAccountWorkspaceState(ensureAccountPaths(cfg, account))
 		return strings.TrimSpace(account.ProbeJSON), firstNonEmpty(account.UserName, cfg.UserName), firstNonEmpty(account.SpaceName, cfg.SpaceName), account.Email
 	}
 	return resolveConfigRelativePath(cfg.ConfigPath, cfg.ProbeJSON, cfg.ProbeJSON), strings.TrimSpace(cfg.UserName), strings.TrimSpace(cfg.SpaceName), ""
@@ -215,6 +216,7 @@ func (helper ResolvedLoginHelper) ProbePath(profileDir string) string {
 }
 
 func ensureAccountPaths(cfg AppConfig, account NotionAccount) NotionAccount {
+	account = normalizeAccountWorkspaceState(account)
 	helper := cfg.ResolveLoginHelper()
 	if strings.TrimSpace(account.ProfileDir) == "" || isForeignAbsolutePath(account.ProfileDir) {
 		account.ProfileDir = helper.ProfileDirFor(account.Email)
@@ -240,8 +242,9 @@ func ensureAccountPaths(cfg AppConfig, account NotionAccount) NotionAccount {
 }
 
 func (cfg *AppConfig) UpsertAccount(account NotionAccount) (NotionAccount, int) {
-	account = ensureAccountPaths(*cfg, account)
+	account = normalizeAccountWorkspaceState(ensureAccountPaths(*cfg, account))
 	if existing, index, ok := cfg.FindAccount(account.Email); ok {
+		existing = normalizeAccountWorkspaceState(existing)
 		if account.ProbeJSON == "" {
 			account.ProbeJSON = existing.ProbeJSON
 		}
@@ -272,6 +275,10 @@ func (cfg *AppConfig) UpsertAccount(account NotionAccount) (NotionAccount, int) 
 		if account.PlanType == "" {
 			account.PlanType = existing.PlanType
 		}
+		if account.ActiveWorkspaceID == "" {
+			account.ActiveWorkspaceID = existing.ActiveWorkspaceID
+		}
+		account.Workspaces = mergeWorkspaceLists(account.Workspaces, existing.Workspaces)
 		if account.ClientVersion == "" {
 			account.ClientVersion = existing.ClientVersion
 		}
@@ -320,10 +327,12 @@ func (cfg *AppConfig) UpsertAccount(account NotionAccount) (NotionAccount, int) 
 		if account.TotalFailures == 0 {
 			account.TotalFailures = existing.TotalFailures
 		}
-		cfg.Accounts[index] = account
+		account = normalizeAccountWorkspaceState(account)
+		cfg.Accounts[index] = ensureAccountPaths(*cfg, account)
 		return account, index
 	}
-	cfg.Accounts = append(cfg.Accounts, account)
+	account = normalizeAccountWorkspaceState(account)
+	cfg.Accounts = append(cfg.Accounts, ensureAccountPaths(*cfg, account))
 	return account, len(cfg.Accounts) - 1
 }
 

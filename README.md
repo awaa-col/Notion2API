@@ -27,6 +27,29 @@ Set-Location 'E:\WorkSpace\sub2api\chatgpt_register\Nation2API'
 & 'D:\Go\bin\go.exe' build .\cmd\notion2api
 ```
 
+### Windows 长期运行
+
+建议先在项目根目录放一份你自己的 `config.json`，再用 `deploy/windows` 里的脚本管理：
+
+```powershell
+Set-Location 'E:\WorkSpace\sub2api\chatgpt_register\Nation2API'
+
+# 单脚本入口
+.\deploy\windows\notion2api.ps1 build
+.\deploy\windows\notion2api.ps1 start -BuildIfMissing
+.\deploy\windows\notion2api.ps1 status
+.\deploy\windows\notion2api.ps1 stop
+```
+
+说明：
+
+- 如果你更习惯双击或 `cmd`，也可以用 `deploy\windows\notion2api.cmd`
+- 默认二进制路径是项目根目录下的 `notion2api.exe`
+- 默认配置优先读取项目根目录的 `config.json`，不存在时回退到 `config.example.json`
+- 运行状态文件写入 `runtime/notion2api.pid` 和 `runtime/notion2api.state.json`
+- 日志写入 `runtime/logs/notion2api.stdout.log` 与 `runtime/logs/notion2api.stderr.log`
+- WebUI 静态资源仍然从 `static/admin` 目录读取，部署时不要只复制 exe
+
 ## Docker 部署
 
 先按实际环境修改 `config.docker.json`，再启动：

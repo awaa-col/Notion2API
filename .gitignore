@@ -20,6 +20,7 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+runtime/
 tmp_last_*
 /notion2api
 /notion2api-linux-amd64

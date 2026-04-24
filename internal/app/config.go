@@ -69,35 +69,45 @@ type PromptConfig struct {
 	DirectAnswerRetryPrefixes        []string `json:"direct_answer_retry_prefixes,omitempty"`
 }
 
+type NotionWorkspace struct {
+	ID        string `json:"id"`
+	ViewID    string `json:"view_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	PlanType  string `json:"plan_type,omitempty"`
+	AIEnabled bool   `json:"ai_enabled,omitempty"`
+}
+
 type NotionAccount struct {
-	Email               string `json:"email"`
-	ProbeJSON           string `json:"probe_json,omitempty"`
-	ProfileDir          string `json:"profile_dir,omitempty"`
-	StorageStatePath    string `json:"storage_state_path,omitempty"`
-	PendingStatePath    string `json:"pending_state_path,omitempty"`
-	UserID              string `json:"user_id,omitempty"`
-	UserName            string `json:"user_name,omitempty"`
-	SpaceID             string `json:"space_id,omitempty"`
-	SpaceViewID         string `json:"space_view_id,omitempty"`
-	SpaceName           string `json:"space_name,omitempty"`
-	PlanType            string `json:"plan_type,omitempty"`
-	ClientVersion       string `json:"client_version,omitempty"`
-	Status              string `json:"status,omitempty"`
-	LastError           string `json:"last_error,omitempty"`
-	LastLoginAt         string `json:"last_login_at,omitempty"`
-	Disabled            bool   `json:"disabled,omitempty"`
-	Priority            int    `json:"priority,omitempty"`
-	HourlyQuota         int    `json:"hourly_quota,omitempty"`
-	WindowStartedAt     string `json:"window_started_at,omitempty"`
-	WindowRequestCount  int    `json:"window_request_count,omitempty"`
-	CooldownUntil       string `json:"cooldown_until,omitempty"`
-	LastUsedAt          string `json:"last_used_at,omitempty"`
-	LastSuccessAt       string `json:"last_success_at,omitempty"`
-	LastRefreshAt       string `json:"last_refresh_at,omitempty"`
-	LastReloginAt       string `json:"last_relogin_at,omitempty"`
-	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
-	TotalSuccesses      int    `json:"total_successes,omitempty"`
-	TotalFailures       int    `json:"total_failures,omitempty"`
+	Email               string            `json:"email"`
+	ProbeJSON           string            `json:"probe_json,omitempty"`
+	ProfileDir          string            `json:"profile_dir,omitempty"`
+	StorageStatePath    string            `json:"storage_state_path,omitempty"`
+	PendingStatePath    string            `json:"pending_state_path,omitempty"`
+	UserID              string            `json:"user_id,omitempty"`
+	UserName            string            `json:"user_name,omitempty"`
+	SpaceID             string            `json:"space_id,omitempty"`
+	SpaceViewID         string            `json:"space_view_id,omitempty"`
+	SpaceName           string            `json:"space_name,omitempty"`
+	PlanType            string            `json:"plan_type,omitempty"`
+	ActiveWorkspaceID   string            `json:"active_workspace_id,omitempty"`
+	Workspaces          []NotionWorkspace `json:"workspaces,omitempty"`
+	ClientVersion       string            `json:"client_version,omitempty"`
+	Status              string            `json:"status,omitempty"`
+	LastError           string            `json:"last_error,omitempty"`
+	LastLoginAt         string            `json:"last_login_at,omitempty"`
+	Disabled            bool              `json:"disabled,omitempty"`
+	Priority            int               `json:"priority,omitempty"`
+	HourlyQuota         int               `json:"hourly_quota,omitempty"`
+	WindowStartedAt     string            `json:"window_started_at,omitempty"`
+	WindowRequestCount  int               `json:"window_request_count,omitempty"`
+	CooldownUntil       string            `json:"cooldown_until,omitempty"`
+	LastUsedAt          string            `json:"last_used_at,omitempty"`
+	LastSuccessAt       string            `json:"last_success_at,omitempty"`
+	LastRefreshAt       string            `json:"last_refresh_at,omitempty"`
+	LastReloginAt       string            `json:"last_relogin_at,omitempty"`
+	ConsecutiveFailures int               `json:"consecutive_failures,omitempty"`
+	TotalSuccesses      int               `json:"total_successes,omitempty"`
+	TotalFailures       int               `json:"total_failures,omitempty"`
 }
 
 type ModelDefinition struct {
@@ -346,11 +356,15 @@ func normalizeConfig(cfg AppConfig) AppConfig {
 		cfg.Accounts[i].UserID = strings.TrimSpace(cfg.Accounts[i].UserID)
 		cfg.Accounts[i].UserName = strings.TrimSpace(cfg.Accounts[i].UserName)
 		cfg.Accounts[i].SpaceID = strings.TrimSpace(cfg.Accounts[i].SpaceID)
+		cfg.Accounts[i].SpaceViewID = strings.TrimSpace(cfg.Accounts[i].SpaceViewID)
 		cfg.Accounts[i].SpaceName = strings.TrimSpace(cfg.Accounts[i].SpaceName)
+		cfg.Accounts[i].PlanType = strings.TrimSpace(cfg.Accounts[i].PlanType)
+		cfg.Accounts[i].ActiveWorkspaceID = strings.TrimSpace(cfg.Accounts[i].ActiveWorkspaceID)
 		cfg.Accounts[i].ClientVersion = strings.TrimSpace(cfg.Accounts[i].ClientVersion)
 		cfg.Accounts[i].Status = strings.TrimSpace(cfg.Accounts[i].Status)
 		cfg.Accounts[i].LastError = strings.TrimSpace(cfg.Accounts[i].LastError)
 		cfg.Accounts[i].LastLoginAt = strings.TrimSpace(cfg.Accounts[i].LastLoginAt)
+		cfg.Accounts[i] = normalizeAccountWorkspaceState(cfg.Accounts[i])
 		cfg.Accounts[i] = ensureAccountPaths(cfg, cfg.Accounts[i])
 	}
 	cfg.ProbeJSON = strings.TrimSpace(cfg.ProbeJSON)
